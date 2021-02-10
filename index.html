@@ -1,0 +1,146 @@
+<html>
+
+<body>
+    <span style="float: left; color: brown; font-size: xx-large;">对方</span> <span style="float: right; color: brown; font-size: xx-large;">本地</span> <br><br><br>
+    <hr />
+
+    <video id="remoteVideo" autoplay></video>
+    <video id="localVideo" autoplay style="float: right;"></video>
+    <script>
+        // 获取多类兼容的 webRTC连接
+        var PeerConnection = (window.PeerConnection || window.webkitPeerConnection || window.webkitRTCPeerConnection || window.RTCPeerConnection);
+        // 获取多类兼容的 媒体流
+        var getUserMedia = (navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia);
+        // 仅仅用于控制哪一端的浏览器发起offer，#号后面有值的一方发起
+        var isCaller = window.location.href.split('#')[1];
+
+        // 与信令服务器的WebSocket连接
+        var socket = new WebSocket("wss://mixiadong.xyz/test");
+
+        // stun和turn服务器
+        var iceServer = {
+            "iceServers": [{
+                url: "stun:121.36.241.137:3478"
+            }, {
+                url: "turn:121.36.241.137:3478",
+                credential: 'mxd666',
+                username: 'mxd666'
+            }]
+        };
+
+        // 创建PeerConnection实例 (参数为null则没有iceserver，即使没有stunserver和turnserver，仍可在局域网下通讯)
+        var pc = new PeerConnection(iceServer);
+
+        socket.onopen = function() {
+
+            console.log("通讯正常连接....")
+            createStream({
+                "video": true,
+                "audio": true
+            })
+
+            // 发送ICE候选到其他客户端
+            pc.onicecandidate = function(event) {
+                if (event.candidate !== null) {
+                    socket.send(JSON.stringify({
+                        "event": "_ice_candidate",
+                        "data": {
+                            "candidate": event.candidate
+                        }
+                    }));
+                }
+            };
+            setTimeout(() => {
+                // 拉取连接池
+                console.log(pc)
+            }, 15000);
+        }
+
+        socket.onerror = function() {
+            console.log("通讯连接失败....")
+        }
+
+        socket.onclose = function() {
+            console.log("通讯连接关闭....")
+        }
+
+        //处理到来的信令
+        socket.onmessage = function(event) {
+            var json = JSON.parse(event.data);
+            //如果是一个ICE的候选，则将其加入到PeerConnection中，否则设定对方的session描述为传递过来的描述
+            if (json.event === "_ice_candidate") {
+                pc.addIceCandidate(new RTCIceCandidate(json.data.candidate));
+
+            } else {
+                pc.setRemoteDescription(new RTCSessionDescription(json.data.sdp));
+                // 如果是一个offer，那么需要回复一个answer
+                if (json.event === "_offer") {
+                    // 将发送方的描述写进 webpeer 连接中
+                    pc.setRemoteDescription(json.data.sdp)
+                        // 并生成应答描述，且发送给 发起方
+                    pc.createAnswer(sendAnswerFn, function(error) {
+                        console.log('Failure callback: ' + error);
+                    });
+                }
+                if (json.event === "_answer") {
+                    // 将接受方的描述添加进 连接中
+                    pc.setRemoteDescription(json.data.sdp)
+                }
+            }
+        };
+
+
+        // 如果检测到媒体流连接到本地，将其绑定到一个video标签上输出
+        pc.onaddstream = function(event) {
+            document.getElementById('remoteVideo').srcObject = event.stream;
+        };
+
+        // 发送offer和answer的函数，发送本地session描述
+        var sendOfferFn = function(desc) {
+                pc.setLocalDescription(desc);
+                socket.send(JSON.stringify({
+                    "event": "_offer",
+                    "data": {
+                        "sdp": desc
+                    }
+                }));
+            },
+            sendAnswerFn = function(desc) {
+                pc.setLocalDescription(desc);
+                socket.send(JSON.stringify({
+                    "event": "_answer",
+                    "data": {
+                        "sdp": desc
+                    }
+                }));
+            };
+
+        // 获取本地音频和视频流    navigator.webkitGetUserMedia  不稳定
+        var createStream = function(options) {
+            options.video = !!options.video;
+            options.audio = !!options.audio;
+            if (getUserMedia) {
+                getUserMedia.call(navigator, options, function(stream) {
+                        //绑定本地媒体流到video标签用于输出
+                        document.getElementById('localVideo').srcObject = stream;
+                        //向PeerConnection中加入需要发送的流
+                        pc.addStream(stream);
+                        //如果是发起方则发送一个offer信令
+                        if (isCaller) {
+                            pc.createOffer(sendOfferFn, function(error) {
+                                console.log('Failure callback: ' + error);
+                            });
+                        }
+                    },
+                    function(error) {
+                        //处理媒体流创建失败错误
+                        console.log('getUserMedia error: ' + error);
+                    });
+            } else {
+                console.log('stream_create_error: ' + 'WebRTC is not yet supported in this browser.');
+            }
+        };
+    </script>
+</body>
+
+</html>
